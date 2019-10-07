@@ -1,0 +1,98 @@
+#!/usr/bin/php
+<?php
+ 
+function is_valid_php_syntax( $file, &$output ){
+    exec("php -l " . escapeshellarg($file). ' 2>&1', $output, $return);
+    return ($return != 0);
+}
+function is_valid_sqlite( $file, &$output ){
+    exec("sqlite3 ". escapeshellarg($file). ' "PRAGMA integrity_check" 2>&1', $output, $return);
+    return ($return != 0);
+}
+function contain_bom( $file ){
+    $contents = file_get_contents($file);
+    return (preg_match("/^efbbbf/", bin2hex($contents[0] . $contents[1] . $contents[2])) === 1);
+}
+function contain_tab( $file ){
+    $output = "";
+    exec("unset LANG; grep $'\t' ". escapeshellarg($file). " |wc -l", $output);
+    return ( intval(trim($output[0])) > 0 );
+}
+function contain_CR( $file ){
+    $contents = file_get_contents($file);
+    return (preg_match("/\x0d/", $contents) === 1);
+}
+function contain_var_dump( $file ){
+    $contents = file_get_contents($file);
+    $tokens = token_get_all($contents);
+    foreach($tokens as $token){
+        if(isset($token[1]) && $token[1] == 'var_dump' && $token[0] == T_STRING){
+            return true;
+        }
+    }
+    return false;
+}
+ 
+$output = array();
+$syntax_ignore_list = array('nfs/lib/modules/ec/class/EcPaymentPaygentConfig.php');
+exec("git diff-index --cached --name-only HEAD", $output);
+ 
+$exit_status = 0;
+ 
+foreach ($output as $file) {
+    if( !is_file($file) ) continue;
+    $is_html   = ( preg_match('/\.html?$/', $file) === 1 );
+    $is_php    = ( preg_match('/\.php$/',  $file) === 1 );
+    $is_js     = ( preg_match('/\.js$/',  $file) === 1 );
+    $is_css    = ( preg_match('/\.css$/',  $file) === 1 );
+    $is_sql    = ( preg_match('/\.sql$/',  $file) === 1 );
+    $is_txt    = ( preg_match('/\.txt$/',  $file) === 1 );
+    $is_plane_text = ( $is_html || $is_php || $is_js || $is_css || $is_sql || $is_txt);
+    $is_sqlite = ( preg_match('/\.db$/',   $file) === 1 );
+ 
+    if( $is_plane_text ) {
+ 
+        // BOM Check
+        if( contain_bom( $file ) ){
+            echo "BOM check error: ". trim($file). " contains BOM.\n";
+            $exit_status = 1;
+        }
+ 
+        // Tab Check
+        if( contain_tab( $file ) ){
+            echo "TAB check error: ". trim($file). " contains TAB.\n";
+            $exit_status = 1;
+        }
+ 
+        // CR Check
+        if( contain_CR( $file ) ){
+            echo "CR check error: ". trim($file). " contains CR illegal code.\n";
+            $exit_status = 1;
+        }
+ 
+        if( $is_php && !in_array($file, $syntax_ignore_list)){
+            // PHP Syntax Check
+            $lint_output = array();
+            if( is_valid_php_syntax( $file, $lint_output ) ){
+                echo implode("\n", $lint_output), "\n";
+                $exit_status = 1;
+            }
+            //var_dump Check
+            if( contain_var_dump( $file ) ){
+                echo "var_dump check error: ".trim($file)." contains function var_dump.\n";
+                $exit_status = 1;
+            }
+        }
+ 
+    }else if( $is_sqlite ){
+ 
+        // SQLite Structure Check
+        $lint_output = array();
+        if( is_valid_sqlite( $file, $lint_output ) ){
+            echo trim($file). "\n";
+            echo implode("\n", $lint_output), "\n";
+            $exit_status = 1;
+        }
+    }
+}
+exit($exit_status);
